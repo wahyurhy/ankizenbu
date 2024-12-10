@@ -1,18 +1,25 @@
 package com.wahyurhy.ankizenbu
 
 import android.annotation.SuppressLint
+import android.app.AlarmManager
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -44,9 +51,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.edit
@@ -56,22 +61,95 @@ import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions
 import com.wahyurhy.ankizenbu.ui.components.DarkModeToggle
 import com.wahyurhy.ankizenbu.ui.components.ImagePreviewer
 import com.wahyurhy.ankizenbu.ui.theme.AnkiZenbuTheme
+import com.wahyurhy.ankizenbu.utils.notifikasi.NotificationReceiver
 import com.wahyurhy.ankizenbu.utils.tokenizeJapaneseText
 
 
 class MainActivity : ComponentActivity() {
+
+    private val requestNotificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
+            if (isGranted) {
+                // Izin diberikan, Anda dapat menampilkan notifikasi
+                println("Izin notifikasi diberikan")
+            } else {
+                // Izin ditolak, beri tahu pengguna
+                println("Izin notifikasi ditolak")
+            }
+        }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent {
-            MyApp(applicationContext)
+
+        // Periksa izin untuk SCHEDULE_EXACT_ALARM pada Android 12+ (API 31+)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            if (!alarmManager.canScheduleExactAlarms()) {
+                val intent = Intent(android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)
+                startActivity(intent) // Mengarahkan pengguna ke pengaturan untuk memberikan izin
+            }
         }
+
+        // Periksa dan minta izin jika diperlukan
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestNotificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
+
+        createNotificationChannel()
+
+        handleIntent(intent)
+
+        setContent {
+            MyApp(applicationContext, ::sendTextToExternalApp)
+        }
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        handleIntent(intent)
+    }
+
+    private fun sendTextToExternalApp(context: Context, text: String) {
+        val sendIntent = Intent().apply {
+            action = Intent.ACTION_SEND
+            putExtra(Intent.EXTRA_TEXT, text)
+            type = "text/plain"
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        val shareIntent = Intent.createChooser(sendIntent, null)
+        shareIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(shareIntent)
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        intent?.let {
+            if (it.action == "SEND_WORD") {
+                val word = it.getStringExtra("word")
+                if (word != null) {
+                    sendTextToExternalApp(applicationContext, word)
+                }
+            }
+        }
+    }
+
+    private fun createNotificationChannel() {
+        val name = "Word Reminder Channel"
+        val descriptionText = "Channel for word reminders"
+        val importance = NotificationManager.IMPORTANCE_HIGH
+        val channel = NotificationChannel("word_reminder", name, importance).apply {
+            description = descriptionText
+        }
+        val notificationManager: NotificationManager =
+            getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.createNotificationChannel(channel)
     }
 }
 
 @SuppressLint("MutableCollectionMutableState")
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun MyApp(context: Context) {
+fun MyApp(context: Context, sendTextToExternalApp: (Context, String) -> Unit) {
     var inputText by remember { mutableStateOf(TextFieldValue("")) }
     var wordList by remember { mutableStateOf(listOf<String>()) }
     var recognizedText by remember { mutableStateOf("") }
@@ -122,18 +200,6 @@ fun MyApp(context: Context) {
             .addOnFailureListener { exception ->
                 recognizedText = "Error: ${exception.message}"
             }
-    }
-
-    fun sendTextToExternalApp(context: Context, text: String) {
-        val sendIntent = Intent().apply {
-            action = Intent.ACTION_SEND
-            putExtra(Intent.EXTRA_TEXT, text)
-            type = "text/plain"
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        val shareIntent = Intent.createChooser(sendIntent, null)
-        shareIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        context.startActivity(shareIntent)
     }
 
     LaunchedEffect(Unit) {
@@ -290,40 +356,74 @@ fun MyApp(context: Context) {
                                 else -> Color.Black // Tetap hitam jika belum pernah diklik
                             }
 
-                            Button(
-                                onClick = {
-                                    // Perbarui jumlah klik
-                                    val newClickCount = (clickCount + 1) % 4 // Siklus ulang ke 0 setelah 3
-                                    clickCounts[word] = newClickCount
-
-                                    // Copy word to clipboard
-                                    val clip = ClipData.newPlainText("Copied Text", word)
-                                    clipboardManager.setPrimaryClip(clip)
-
-                                    // Send word to external app
-                                    sendTextToExternalApp(context, word)
-
-                                    // Simpan jumlah klik di SharedPreferences
-                                    sharedPreferences.edit { putInt("${word}_clickCount", newClickCount) }
-
-                                    // Update `totalClicksByCount` secara langsung
-                                    val currentCount = totalClicksByCount.value[newClickCount] ?: 0
-                                    val previousCount = totalClicksByCount.value[clickCount] ?: 0
-                                    totalClicksByCount.value = totalClicksByCount.value.toMutableMap().apply {
-                                        this[newClickCount] = currentCount + 1
-                                        this[clickCount] = maxOf(0, previousCount - 1)
-                                    }
-                                },
+                            Box(
                                 modifier = Modifier
                                     .padding(4.dp)
-                                    .fillMaxWidth(),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = buttonColor,
-                                    contentColor = Color.White
-                                ),
-                                shape = RoundedCornerShape(8.dp)
+                                    .fillMaxWidth()
+                                    .background(
+                                        color = buttonColor,
+                                        shape = RoundedCornerShape(8.dp)
+                                    )
+                                    .combinedClickable(
+                                        onClick = {
+                                            // Perbarui jumlah klik
+                                            val newClickCount = if (clickCount < 3) clickCount + 1 else 3 // Tetap di 3 jika sudah mencapai 3
+                                            clickCounts[word] = newClickCount
+
+                                            // Copy word to clipboard
+                                            val clip = ClipData.newPlainText("Copied Text", word)
+                                            clipboardManager.setPrimaryClip(clip)
+
+                                            // Send word to external app
+                                            sendTextToExternalApp(context, word)
+
+                                            // Simpan jumlah klik di SharedPreferences
+                                            sharedPreferences.edit { putInt("${word}_clickCount", newClickCount) }
+
+                                            // Update `totalClicksByCount` secara langsung
+                                            if (newClickCount < 3) { // Pastikan hanya dilakukan jika newClickCount < 3
+                                                val currentCount = totalClicksByCount.value[newClickCount] ?: 0
+                                                val previousCount = totalClicksByCount.value[clickCount] ?: 0
+                                                totalClicksByCount.value = totalClicksByCount.value.toMutableMap().apply {
+                                                    this[newClickCount] = currentCount + 1
+                                                    this[clickCount] = maxOf(0, previousCount - 1)
+                                                }
+                                            } else if (newClickCount == 3 && clickCount < 3) {
+                                                // Jika mencapai 3 dari kondisi sebelumnya <3, tambahkan ke `totalClicksByCount`
+                                                val previousCount = totalClicksByCount.value[clickCount] ?: 0
+                                                totalClicksByCount.value = totalClicksByCount.value.toMutableMap().apply {
+                                                    this[3] = (this[3] ?: 0) + 1
+                                                    this[clickCount] = maxOf(0, previousCount - 1)
+                                                }
+                                            }
+
+                                            // Jika jumlah klik mencapai 3, jadwalkan notifikasi
+                                            if (newClickCount == 3) {
+                                                NotificationReceiver.scheduleReminder(context, word, 24 * 60 * 60 * 1000L) // 1 hari
+                                            }
+                                        },
+                                        onLongClick = {
+                                            // Reset jumlah klik
+                                            clickCounts[word] = 0
+                                            sharedPreferences.edit { putInt("${word}_clickCount", 0) }
+
+                                            // Perbarui totalClicksByCount
+                                            val previousCount = totalClicksByCount.value[clickCount] ?: 0
+                                            if (clickCount > 0) {
+                                                totalClicksByCount.value = totalClicksByCount.value.toMutableMap().apply {
+                                                    this[clickCount] = maxOf(0, previousCount - 1)
+                                                }
+                                            }
+                                        }
+                                    )
+                                    .padding(16.dp) // Untuk menambahkan padding ke dalam tombol
                             ) {
-                                Text(word, fontSize = 14.sp)
+                                Text(
+                                    text = word,
+                                    fontSize = 14.sp,
+                                    color = Color.White,
+                                    modifier = Modifier.align(Alignment.Center)
+                                )
                             }
                         }
                     }
@@ -333,8 +433,8 @@ fun MyApp(context: Context) {
     }
 }
 
-@Preview(showBackground = true)
-@Composable
-fun MyAppPreview() {
-    MyApp(context = LocalContext.current)
-}
+//@Preview(showBackground = true)
+//@Composable
+//fun MyAppPreview() {
+//    MyApp(context = LocalContext.current, sendTextToExternalApp = ::sendTextToExternalApp)
+//}
