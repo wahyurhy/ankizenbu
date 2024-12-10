@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -28,7 +29,7 @@ fun ImagePreviewer(bitmap: Bitmap) {
         modifier = Modifier
             .fillMaxWidth()
             .height(50.dp)
-            .background(Color.White)
+            .background(color = MaterialTheme.colorScheme.surface)
             .clickable { isPreviewVisible = true } // Klik untuk memunculkan preview
     )
 
